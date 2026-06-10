@@ -21,9 +21,9 @@ import pandas as pd
 from data   import ALL_TEAMS, WC2026_GROUPS, SPORT5_ODDS
 from models import (ELOSystem, DixonColesModel, MLModel, EnsembleModel,
                     generate_training_data, build_ml_features)
-from predict import (predict_round1, print_round1_summary,
-                     print_sport5_strategy, plot_all_round1,
-                     plot_scoreline_heatmap)
+from predict import (predict_group_stage, predict_round1,
+                     print_group_stage_summary, print_sport5_strategy,
+                     plot_all_round1, plot_scoreline_heatmap)
 
 
 # ── toggle what to generate ───────────────────────────────────────────────────
@@ -69,12 +69,12 @@ def main():
     print("\n[5] Building ensemble (DC 55% + ML 45%) …")
     ensemble = EnsembleModel(dc, ml, dc_weight=0.55)
 
-    # ── 6. Predict Round 1 ────────────────────────────────────────────────────
-    print("\n[6] Predicting all 24 Round-1 fixtures …")
-    results = predict_round1(ensemble, elo, matches)
+    # ── 6. Predict all 72 group-stage games ──────────────────────────────────
+    print("\n[6] Predicting all 72 group-stage fixtures (3 matchdays × 24 games) …")
+    results = predict_group_stage(ensemble, elo, matches)
 
-    # ── 7. Print summary ──────────────────────────────────────────────────────
-    print_round1_summary(results)
+    # ── 7. Print full table ───────────────────────────────────────────────────
+    print_group_stage_summary(results)
 
     # ── 8. Sport5 strategy ────────────────────────────────────────────────────
     if any(r["sport5_odds"] is not None for r in results):
@@ -84,14 +84,15 @@ def main():
         print("  → Fill in the odds you see in the app to get EV-optimised picks.")
         print("  → Without odds, 'Rec.' column shows the most-probable scoreline.")
 
-    # ── 9. Pie charts ─────────────────────────────────────────────────────────
+    # ── 9. Pie charts (round 1 only to avoid generating 72 files) ────────────
     if GENERATE_PIES:
-        plot_all_round1(results, save_dir=CHART_DIR)
+        r1 = [r for r in results if r["matchday"] == 1]
+        plot_all_round1(r1, save_dir=CHART_DIR)
 
-    # ── 10. Heat-maps ─────────────────────────────────────────────────────────
+    # ── 10. Heat-maps (round 1 only) ─────────────────────────────────────────
     if GENERATE_HEATMAPS:
-        print(f"\n[Heatmaps] Saving scoreline heat-maps to '{CHART_DIR}/' …")
-        for r in results:
+        print(f"\n[Heatmaps] Saving scoreline heat-maps for MD1 to '{CHART_DIR}/' …")
+        for r in [r for r in results if r["matchday"] == 1]:
             plot_scoreline_heatmap(r, max_goals=5, save_dir=CHART_DIR)
         print("[Heatmaps] Done.")
 

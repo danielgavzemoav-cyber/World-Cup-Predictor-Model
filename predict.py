@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from pathlib import Path
 
-from data import (HOST_NATIONS, ROUND1_FIXTURES,
+from data import (HOST_NATIONS, ROUND1_FIXTURES, ALL_GROUP_FIXTURES,
                   SPORT5_ODDS, SPORT5_EXACT_BONUS_GROUP)
 from models import ELOSystem, EnsembleModel
 
@@ -87,6 +87,36 @@ def optimal_prediction(ens_matrix: np.ndarray,
 # 3.  PREDICT ALL ROUND-1 GAMES
 # ══════════════════════════════════════════════════════════════════════════════
 
+def predict_group_stage(ensemble: EnsembleModel,
+                        elo: ELOSystem,
+                        matches: pd.DataFrame,
+                        as_of: pd.Timestamp | None = None,
+                        ) -> list[dict]:
+    """Predict all 72 group-stage games across the 3 matchdays."""
+    if as_of is None:
+        as_of = pd.Timestamp("2026-06-11")
+    results = []
+    for t1, t2, grp, md in ALL_GROUP_FIXTURES:
+        home = is_home_game(t1, t2)
+        pred = ensemble.predict_all(t1, t2, home, elo, matches, as_of)
+        odds = SPORT5_ODDS.get((t1, t2)) or SPORT5_ODDS.get((t2, t1))
+        best_score, ev, method = optimal_prediction(
+            pred["ens_matrix"], pred["ens_probs"], odds
+        )
+        results.append({
+            "group": grp, "matchday": md,
+            "team1": t1, "team2": t2, "is_home": home,
+            "ml_H": pred["ml_probs"]["H"], "ml_D": pred["ml_probs"]["D"], "ml_A": pred["ml_probs"]["A"],
+            "dc_H": pred["dc_probs"]["H"], "dc_D": pred["dc_probs"]["D"], "dc_A": pred["dc_probs"]["A"],
+            "ens_H": pred["ens_probs"]["H"], "ens_D": pred["ens_probs"]["D"], "ens_A": pred["ens_probs"]["A"],
+            "xg1": pred["xg1"], "xg2": pred["xg2"],
+            "rec_score": best_score, "rec_ev": round(ev, 4),
+            "rec_method": method, "sport5_odds": odds,
+            "_matrix": pred["ens_matrix"],
+        })
+    return results
+
+
 def predict_round1(ensemble: EnsembleModel,
                    elo: ELOSystem,
                    matches: pd.DataFrame,
@@ -144,44 +174,53 @@ def predict_round1(ensemble: EnsembleModel,
 # 4.  PRINT SUMMARY TABLE
 # ══════════════════════════════════════════════════════════════════════════════
 
-def print_round1_summary(results: list[dict]) -> None:
-    hdr = (f"{'Grp':>3}  {'Team 1':<25}  {'Team 2':<25}  "
+def print_group_stage_summary(results: list[dict]) -> None:
+    hdr = (f"{'MD':>2}  {'Grp':>3}  {'Team 1':<25}  {'Team 2':<25}  "
            f"{'ML: W/D/L':>14}  {'DC: W/D/L':>14}  {'ENS: W/D/L':>15}  "
            f"{'xG':>7}  {'Rec.':>6}  {'EV':>5}")
-    print("\n" + "=" * len(hdr))
-    print("  ROUND 1 – PREDICTED OUTCOMES  (W=team1 win, D=draw, L=team2 win)")
-    print("=" * len(hdr))
-    print(hdr)
-    print("-" * len(hdr))
+    LINE = "=" * len(hdr)
 
-    prev_grp = None
-    for r in results:
-        if r["group"] != prev_grp:
-            if prev_grp is not None:
-                print()
-            print(f"  Group {r['group']}")
-            prev_grp = r["group"]
+    # Group by matchday
+    from itertools import groupby
+    results_sorted = sorted(results, key=lambda r: (r["matchday"], r["group"]))
 
-        ml  = f"{r['ml_H']:.0%}/{r['ml_D']:.0%}/{r['ml_A']:.0%}"
-        dc  = f"{r['dc_H']:.0%}/{r['dc_D']:.0%}/{r['dc_A']:.0%}"
-        ens = f"{r['ens_H']:.0%}/{r['ens_D']:.0%}/{r['ens_A']:.0%}"
-        xg  = f"{r['xg1']:.1f}-{r['xg2']:.1f}"
-        rec = f"{r['rec_score'][0]}-{r['rec_score'][1]}"
-        ev  = f"{r['rec_ev']:.3f}"
-        home_tag = " (H)" if r["is_home"] else ""
+    for md, md_games in groupby(results_sorted, key=lambda r: r["matchday"]):
+        md_games = list(md_games)
+        print("\n" + LINE)
+        print(f"  MATCHDAY {md}  –  PREDICTED OUTCOMES  (W=team1 win, D=draw, L=team2 win)")
+        print(LINE)
+        print(hdr)
+        print("-" * len(hdr))
 
-        print(f"  {r['group']:>3}  "
-              f"{r['team1']+home_tag:<25}  {r['team2']:<25}  "
-              f"{ml:>14}  {dc:>14}  {ens:>15}  "
-              f"{xg:>7}  {rec:>6}  {ev:>5}")
+        prev_grp = None
+        for r in md_games:
+            if r["group"] != prev_grp:
+                if prev_grp is not None:
+                    print()
+                print(f"  Group {r['group']}")
+                prev_grp = r["group"]
 
-    print("=" * len(hdr))
-    print("  (H) = host-nation home advantage applied")
-    print("  Rec = sport5-optimised scoreline prediction")
-    print("  EV  = expected sport5 points for recommended prediction")
-    if any(r["rec_method"] == "most_likely_score" for r in results):
-        print("  * No sport5 odds provided → Rec is most-probable scoreline.")
-        print("    Add odds to data.py::SPORT5_ODDS to maximise expected points.")
+            ml  = f"{r['ml_H']:.0%}/{r['ml_D']:.0%}/{r['ml_A']:.0%}"
+            dc  = f"{r['dc_H']:.0%}/{r['dc_D']:.0%}/{r['dc_A']:.0%}"
+            ens = f"{r['ens_H']:.0%}/{r['ens_D']:.0%}/{r['ens_A']:.0%}"
+            xg  = f"{r['xg1']:.1f}-{r['xg2']:.1f}"
+            rec = f"{r['rec_score'][0]}-{r['rec_score'][1]}"
+            ev  = f"{r['rec_ev']:.3f}"
+            home_tag = " (H)" if r["is_home"] else ""
+            print(f"  {md:>2}  {r['group']:>3}  "
+                  f"{r['team1']+home_tag:<25}  {r['team2']:<25}  "
+                  f"{ml:>14}  {dc:>14}  {ens:>15}  "
+                  f"{xg:>7}  {rec:>6}  {ev:>5}")
+
+        print(LINE)
+
+    print("\n  (H) = host-nation home advantage  |  Rec = recommended sport5 score")
+    print("  EV  = expected sport5 pts  |  * = most-probable score (no odds provided)")
+
+
+# backward-compat alias
+def print_round1_summary(results):
+    print_group_stage_summary(results)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

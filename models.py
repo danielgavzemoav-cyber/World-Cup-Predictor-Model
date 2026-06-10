@@ -94,8 +94,9 @@ def generate_training_data(teams: list[str], n: int = 3000,
         s1 = SQUAD_STRENGTH.get(ht, 65) / 100.0
         s2 = SQUAD_STRENGTH.get(at, 65) / 100.0
         boost = 0.30 if v == "home" else 0.0
-        lam1 = max(0.30, 1.5 * (s1 / s2) ** 0.55 + boost)
-        lam2 = max(0.30, 1.5 * (s2 / s1) ** 0.55)
+        # Exponent 0.85 creates realistic blow-out scores for big mismatches
+        lam1 = max(0.30, 1.5 * (s1 / s2) ** 0.85 + boost)
+        lam2 = max(0.10, 1.5 * (s2 / s1) ** 0.85)  # floor 0.10 not 0.30
         home_goals.append(np.random.poisson(lam1))
         away_goals.append(np.random.poisson(lam2))
 
@@ -216,11 +217,14 @@ class DixonColesModel:
         l2_dc = np.exp(atk[i2] + dfs[i1])
 
         if elo is not None:
-            avg = (elo.ratings.get(t1, 1700.0) + elo.ratings.get(t2, 1700.0)) / 2.0
-            s1  = (elo.ratings.get(t1, 1700.0) / avg) ** elo_weight
-            s2  = (elo.ratings.get(t2, 1700.0) / avg) ** elo_weight
-            l1_dc *= s1
-            l2_dc *= s2
+            e1  = elo.ratings.get(t1, 1700.0)
+            e2  = elo.ratings.get(t2, 1700.0)
+            avg = (e1 + e2) / 2.0
+            # Dynamic weight: grows with ELO gap so blowout matchups get
+            # much stronger scaling than close games
+            dyn_w = min(0.85, elo_weight + abs(e1 - e2) / 1200.0)
+            l1_dc *= (e1 / avg) ** dyn_w
+            l2_dc *= (e2 / avg) ** dyn_w
 
         return l1_dc, l2_dc
 

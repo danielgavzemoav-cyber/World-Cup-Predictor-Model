@@ -22,33 +22,35 @@ HOST_NATIONS = {"USA", "Canada", "Mexico"}
 
 ALL_TEAMS = [t for grp in WC2026_GROUPS.values() for t in grp]
 
-# (team1, team2, group) - team1 is the "home" side for venue purposes
-ROUND1_FIXTURES = [
-    ("Mexico",                 "South Africa",          "A"),
-    ("South Korea",            "Czechia",               "A"),
-    ("Canada",                 "Bosnia and Herzegovina","B"),
-    ("Qatar",                  "Switzerland",           "B"),
-    ("Brazil",                 "Morocco",               "C"),
-    ("Haiti",                  "Scotland",              "C"),
-    ("USA",                    "Paraguay",              "D"),
-    ("Australia",              "Turkey",                "D"),
-    ("Germany",                "Curaçao",               "E"),
-    ("Ivory Coast",            "Ecuador",               "E"),
-    ("Netherlands",            "Japan",                 "F"),
-    ("Sweden",                 "Tunisia",               "F"),
-    ("Belgium",                "Egypt",                 "G"),
-    ("Iran",                   "New Zealand",           "G"),
-    ("Spain",                  "Cape Verde",            "H"),
-    ("Saudi Arabia",           "Uruguay",               "H"),
-    ("France",                 "Senegal",               "I"),
-    ("Iraq",                   "Norway",                "I"),
-    ("Argentina",              "Algeria",               "J"),
-    ("Austria",                "Jordan",                "J"),
-    ("Portugal",               "DR Congo",              "K"),
-    ("Uzbekistan",             "Colombia",              "K"),
-    ("England",                "Croatia",               "L"),
-    ("Ghana",                  "Panama",                "L"),
-]
+
+def _generate_group_fixtures():
+    """
+    All 72 group-stage games (6 per group, 3 matchdays × 2 games).
+    Standard round-robin for teams [T1, T2, T3, T4]:
+      MD1: T1 vs T2,  T3 vs T4
+      MD2: T1 vs T3,  T2 vs T4
+      MD3: T1 vs T4,  T2 vs T3
+    Host nations (Mexico, Canada, USA) sit at position 1 in their group,
+    so they are always team1 (home side) in every game they play.
+    Returns list of (team1, team2, group, matchday).
+    """
+    fixtures = []
+    for grp, teams in WC2026_GROUPS.items():
+        T1, T2, T3, T4 = teams
+        fixtures += [
+            (T1, T2, grp, 1), (T3, T4, grp, 1),
+            (T1, T3, grp, 2), (T2, T4, grp, 2),
+            (T1, T4, grp, 3), (T2, T3, grp, 3),
+        ]
+    return fixtures
+
+
+ALL_GROUP_FIXTURES = _generate_group_fixtures()   # 72 games, (t1,t2,grp,md)
+
+# Convenience views by matchday (strip matchday field, keep t1/t2/grp)
+ROUND1_FIXTURES = [(t1, t2, g) for t1, t2, g, md in ALL_GROUP_FIXTURES if md == 1]
+ROUND2_FIXTURES = [(t1, t2, g) for t1, t2, g, md in ALL_GROUP_FIXTURES if md == 2]
+ROUND3_FIXTURES = [(t1, t2, g) for t1, t2, g, md in ALL_GROUP_FIXTURES if md == 3]
 
 # FIFA Rankings – June 2026 official update
 FIFA_RANKINGS = {
