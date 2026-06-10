@@ -20,7 +20,8 @@ import pandas as pd
 
 from data   import ALL_TEAMS, WC2026_GROUPS, SPORT5_ODDS
 from models import (ELOSystem, DixonColesModel, MLModel, EnsembleModel,
-                    generate_training_data, build_ml_features)
+                    load_real_data, build_ml_features,
+                    tune_elo_k, validate_ensemble_weights)
 from predict import (predict_group_stage, predict_round1,
                      print_group_stage_summary, print_sport5_strategy,
                      plot_all_round1, plot_scoreline_heatmap)
@@ -30,7 +31,9 @@ from predict import (predict_group_stage, predict_round1,
 GENERATE_PIES      = True   # pie charts per game
 GENERATE_HEATMAPS  = True   # scoreline heat-maps per game
 CHART_DIR          = "charts"
-N_TRAINING_SAMPLES = 3000   # increase for more stable DC/ML training
+RESULTS_CSV        = "results.csv"   # martj42/international_results dataset
+DATA_MIN_DATE      = "2020-01-01"    # 6 years of real match data
+VALIDATION_SPLIT   = "2024-01-01"    # train on 2020-2023, test on 2024-2026
 
 
 def main():
@@ -41,62 +44,88 @@ def main():
     print("  FIFA WORLD CUP 2026 – ROUND 1 PREDICTOR")
     print(sep)
 
-    # ── 1. ELO initialisation ─────────────────────────────────────────────────
-    print("\n[1] Initialising ELO ratings from FIFA rankings …")
-    elo = ELOSystem(ALL_TEAMS)
-    top5 = sorted(elo.ratings.items(), key=lambda x: x[1], reverse=True)[:5]
+    # ── 1. Load real match data ───────────────────────────────────────────────
+    print(f"\n[1] Loading real match data from '{RESULTS_CSV}' (since {DATA_MIN_DATE}) …")
+    matches = load_real_data(RESULTS_CSV, min_date=DATA_MIN_DATE)
+    print(f"    Loaded: {len(matches):,} matches, "
+          f"{matches['home_team'].nunique()} unique teams, "
+          f"{matches['date'].min().date()} – {matches['date'].max().date()}")
+
+    # ── 2. Train / test split ─────────────────────────────────────────────────
+    train_matches = matches[matches["date"] < VALIDATION_SPLIT].copy()
+    test_matches  = matches[matches["date"] >= VALIDATION_SPLIT].copy()
+    print(f"\n[2] Train/test split at {VALIDATION_SPLIT}:")
+    print(f"    Train: {len(train_matches):,} matches  ({train_matches['date'].min().date()} – {train_matches['date'].max().date()})")
+    print(f"    Test : {len(test_matches):,} matches   ({test_matches['date'].min().date()} – {test_matches['date'].max().date()})")
+
+    # ── 3. Tune ELO K on training data only (last 12 months of train window) ─
+    print("\n[3] Tuning ELO K on training data …")
+    best_k = tune_elo_k(train_matches, ALL_TEAMS)
+    print(f"    Optimal K = {best_k:.1f}  (default was 40)")
+
+    # ── 4. Validate DC vs ML on all held-out test games → per-team weights ───
+    print("\n[4] Validating models on all 2024–2026 test games …")
+    dc_w, ml_w, team_weights, val_metrics = validate_ensemble_weights(
+        train_matches, test_matches, ALL_TEAMS)
+    print(f"\n    ── Global results ({val_metrics['n_test']} test matches) ─────")
+    print(f"    DC model  :  accuracy={val_metrics['dc_accuracy']:.1%}  log-loss={val_metrics['dc_logloss']:.4f}  → global weight {val_metrics['dc_weight']:.1%}")
+    print(f"    ML model  :  accuracy={val_metrics['ml_accuracy']:.1%}  log-loss={val_metrics['ml_logloss']:.4f}  → global weight {val_metrics['ml_weight']:.1%}")
+    print(f"    Global weighting: inverse log-loss  |  Per-team: x/(x+y) accuracy")
+    print(f"\n    ── Per-team DC weights (all WC2026 teams) ──────────────")
+    for t, v in sorted(team_weights.items(), key=lambda x: x[1]["dc"], reverse=True):
+        print(f"    {t:<28}  DC={v['dc']:.0%}  ML={v['ml']:.0%}  ({v['source']})")
+
+    # ── 5. Fit final ELO on ALL data with tuned K ─────────────────────────────
+    print("\n[5] Fitting final ELO on full 6-year history …")
+
+    elo = ELOSystem(ALL_TEAMS, k_group=best_k, k_knockout=best_k * 1.25)
+    elo.fit_from_history(matches)
+    top5 = sorted(
+        [(t, v) for t, v in elo.ratings.items() if t in ALL_TEAMS],
+        key=lambda x: x[1], reverse=True
+    )[:5]
     print("    Top-5 ELO: " + ", ".join(f"{t} {v:.0f}" for t, v in top5))
 
-    # ── 2. Training data ───────────────────────────────────────────────────────
-    print(f"\n[2] Generating {N_TRAINING_SAMPLES:,} synthetic training matches …")
-    print("    (replace generate_training_data() with pd.read_csv() for real data)")
-    matches = generate_training_data(ALL_TEAMS, n=N_TRAINING_SAMPLES)
-    print(f"    Generated: {len(matches):,} matches, "
-          f"{matches['home_team'].nunique()} unique teams")
-
-    # ── 3. Train Dixon-Coles model ────────────────────────────────────────────
-    print("\n[3] Fitting Dixon-Coles model …")
+    # ── 6. Train final DC + ML on full 6-year data ────────────────────────────
+    print("\n[6] Fitting final Dixon-Coles model on full data …")
     dc = DixonColesModel()
     dc.fit(matches)
 
-    # ── 4. Train ML model ─────────────────────────────────────────────────────
-    print("\n[4] Building ML features and training XGBoost …")
+    print("\n[7] Building final ML features and training XGBoost …")
     df_feat = build_ml_features(matches, elo)
     ml = MLModel()
     ml.train(df_feat)
 
-    # ── 5. Build ensemble ─────────────────────────────────────────────────────
-    print("\n[5] Building ensemble (DC 55% + ML 45%) …")
-    ensemble = EnsembleModel(dc, ml, dc_weight=0.55)
+    # ── 7. Build ensemble with data-driven per-team weights ───────────────────
+    print(f"\n[8] Building ensemble  (global DC {dc_w:.0%} / ML {ml_w:.0%}, per-team from 2024–2026 test) …")
+    ensemble = EnsembleModel(dc, ml, dc_weight=dc_w, team_weights=team_weights)
 
-    # ── 6. Predict all 72 group-stage games ──────────────────────────────────
-    print("\n[6] Predicting all 72 group-stage fixtures (3 matchdays × 24 games) …")
+    # ── 9. Predict all 72 group-stage games ──────────────────────────────────
+    print("\n[9] Predicting all 72 group-stage fixtures (3 matchdays × 24 games) …")
     results = predict_group_stage(ensemble, elo, matches)
 
-    # ── 7. Print full table ───────────────────────────────────────────────────
+    # ── 10. Print full table ──────────────────────────────────────────────────
     print_group_stage_summary(results)
 
-    # ── 8. Sport5 strategy ────────────────────────────────────────────────────
+    # ── 11. Sport5 strategy ───────────────────────────────────────────────────
     if any(r["sport5_odds"] is not None for r in results):
         print_sport5_strategy(results)
     else:
         print("\n[Sport5] No odds entered in data.py::SPORT5_ODDS yet.")
-        print("  → Fill in the odds you see in the app to get EV-optimised picks.")
-        print("  → Without odds, 'Rec.' column shows the most-probable scoreline.")
 
-    # ── 9. Pie charts (round 1 only to avoid generating 72 files) ────────────
+    # ── 12. Pie charts (round 1 only) ─────────────────────────────────────────
     if GENERATE_PIES:
         r1 = [r for r in results if r["matchday"] == 1]
         plot_all_round1(r1, save_dir=CHART_DIR)
 
-    # ── 10. Heat-maps (round 1 only) ─────────────────────────────────────────
+    # ── 13. Heat-maps (round 1 only) ──────────────────────────────────────────
     if GENERATE_HEATMAPS:
         print(f"\n[Heatmaps] Saving scoreline heat-maps for MD1 to '{CHART_DIR}/' …")
         for r in [r for r in results if r["matchday"] == 1]:
             plot_scoreline_heatmap(r, max_goals=5, save_dir=CHART_DIR)
         print("[Heatmaps] Done.")
 
-    # ── 11. Dynamic ELO demo ──────────────────────────────────────────────────
+    # ── 14. Dynamic ELO demo ──────────────────────────────────────────────────
     _demo_dynamic_elo(ensemble, elo, matches)
 
     elapsed = time.time() - t0

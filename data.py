@@ -20,6 +20,12 @@ WC2026_GROUPS = {
 # Only these three nations have home-ground advantage
 HOST_NATIONS = {"USA", "Canada", "Mexico"}
 
+# Maps team names used in results.csv → our internal names
+TEAM_NAME_MAP: dict[str, str] = {
+    "United States":  "USA",
+    "Czech Republic": "Czechia",
+}
+
 ALL_TEAMS = [t for grp in WC2026_GROUPS.values() for t in grp]
 
 

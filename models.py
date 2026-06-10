@@ -26,8 +26,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import xgboost as xgb
 
-from data import (FIFA_RANKINGS, SQUAD_STRENGTH, HOST_NATIONS,
-                  ALL_TEAMS, get_initial_elo)
+from data import (SQUAD_STRENGTH, HOST_NATIONS, ALL_TEAMS,
+                  get_initial_elo, TEAM_NAME_MAP)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -35,10 +35,9 @@ from data import (FIFA_RANKINGS, SQUAD_STRENGTH, HOST_NATIONS,
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ELOSystem:
-    K_GROUP    = 40
-    K_KNOCKOUT = 50
-
-    def __init__(self, teams: list[str]):
+    def __init__(self, teams: list[str], k_group: float = 40.0, k_knockout: float = 50.0):
+        self.K_GROUP    = k_group
+        self.K_KNOCKOUT = k_knockout
         self.ratings: dict[str, float] = {t: get_initial_elo(t) for t in teams}
 
     # ── public helpers ────────────────────────────────────────────────────────
@@ -50,9 +49,9 @@ class ELOSystem:
         return 1.0 / (1.0 + 10.0 ** (-self.elo_diff(t1, t2) / 400.0))
 
     def update(self, t1: str, t2: str, g1: int, g2: int,
-               is_knockout: bool = False) -> None:
+               is_knockout: bool = False, k_mult: float = 1.0) -> None:
         """Update ratings after a completed match."""
-        K   = self.K_KNOCKOUT if is_knockout else self.K_GROUP
+        K   = (self.K_KNOCKOUT if is_knockout else self.K_GROUP) * k_mult
         r1  = self.ratings.get(t1, 1700.0)
         r2  = self.ratings.get(t2, 1700.0)
         exp = 1.0 / (1.0 + 10.0 ** ((r2 - r1) / 400.0))
@@ -64,6 +63,26 @@ class ELOSystem:
         delta = K * gd_mult * (actual - exp)
         self.ratings[t1] = r1 + delta
         self.ratings[t2] = r2 - delta
+
+    def fit_from_history(self, matches: pd.DataFrame,
+                         start_elo: float = 1500.0) -> None:
+        """Reset all ELOs to start_elo then replay match history chronologically.
+        WC finals count 1.5×, friendlies count 0.5× to reflect match importance."""
+        all_teams = set(matches["home_team"]) | set(matches["away_team"])
+        for t in all_teams | set(self.ratings):
+            self.ratings[t] = start_elo
+
+        for _, row in matches.sort_values("date").iterrows():
+            trn = str(row.get("tournament", ""))
+            if "Friendly" in trn:
+                k_mult = 0.5
+            elif "World Cup" in trn and "qualif" not in trn.lower():
+                k_mult = 1.5
+            else:
+                k_mult = 1.0
+            self.update(row["home_team"], row["away_team"],
+                        int(row["home_goals"]), int(row["away_goals"]),
+                        k_mult=k_mult)
 
     def snapshot(self) -> dict[str, float]:
         return dict(self.ratings)
@@ -113,6 +132,160 @@ def generate_training_data(teams: list[str], n: int = 3000,
             n, p=[0.05, 0.30, 0.30, 0.35]
         ),
     })
+
+
+def load_real_data(path: str, min_date: str = "2021-01-01") -> pd.DataFrame:
+    """
+    Load real international match results from results.csv (martj42/international_results).
+    Normalises team names, renames columns, and sets venue flag.
+    """
+    df = pd.read_csv(path, parse_dates=["date"])
+    df = df[df["date"] >= pd.Timestamp(min_date)].copy()
+    df["home_team"] = df["home_team"].replace(TEAM_NAME_MAP)
+    df["away_team"] = df["away_team"].replace(TEAM_NAME_MAP)
+    df = df.rename(columns={"home_score": "home_goals", "away_score": "away_goals"})
+    df["venue"] = df["neutral"].apply(
+        lambda x: "neutral" if str(x).upper() == "TRUE" else "home"
+    )
+    df = df.dropna(subset=["home_goals", "away_goals"])
+    df["home_goals"] = df["home_goals"].astype(int)
+    df["away_goals"] = df["away_goals"].astype(int)
+    return (df[["date", "home_team", "away_team",
+                "home_goals", "away_goals", "venue", "tournament"]]
+            .reset_index(drop=True))
+
+
+def tune_elo_k(matches: pd.DataFrame, all_teams: list[str],
+               k_bounds: tuple = (10.0, 100.0)) -> float:
+    """
+    Find the K value that minimises Brier score (mean squared error of win
+    probability vs actual outcome) on the most-recent 12 months of data.
+    Beats vs weaker opponents already produce smaller deltas via the
+    expected-score term; tuning K sets the overall learning-rate scale.
+    """
+    val_cutoff = matches["date"].max() - pd.DateOffset(months=12)
+    val = matches[matches["date"] >= val_cutoff]
+
+    def brier(k):
+        elo = ELOSystem(all_teams, k_group=float(k), k_knockout=float(k) * 1.25)
+        elo.fit_from_history(matches[matches["date"] < val_cutoff])
+        errors = []
+        for _, row in val.iterrows():
+            r1 = elo.ratings.get(row["home_team"], 1500.0)
+            r2 = elo.ratings.get(row["away_team"], 1500.0)
+            p  = 1.0 / (1.0 + 10.0 ** ((r2 - r1) / 400.0))
+            g1, g2 = int(row["home_goals"]), int(row["away_goals"])
+            actual = 1.0 if g1 > g2 else (0.0 if g1 < g2 else 0.5)
+            errors.append((p - actual) ** 2)
+        return float(np.mean(errors)) if errors else 1.0
+
+    result = optimize.minimize_scalar(brier, bounds=k_bounds, method="bounded")
+    return float(result.x)
+
+
+def validate_ensemble_weights(
+        train_matches: pd.DataFrame,
+        test_matches:  pd.DataFrame,
+        all_teams:     list[str],
+) -> tuple[float, float, dict[str, dict], dict]:
+    """
+    Train DC and ML on train_matches, evaluate on test_matches (WC2022 group stage).
+
+    Global weight  : inverse log-loss (standard calibration metric).
+    Per-team weight: accuracy-based — for each team, if DC was correct x% of
+                     that team's games and ML y%, the team's DC weight = x/(x+y).
+                     Teams absent from WC2022 fall back to the global weight.
+
+    Returns (global_dc_w, global_ml_w, team_weights, metrics_dict).
+    """
+    from sklearn.metrics import log_loss as sk_log_loss
+
+    # ── train a fresh ELO + DC + ML on pre-WC data ───────────────────────────
+    print("  [Val] Fitting validation ELO …")
+    elo_v = ELOSystem(all_teams)
+    elo_v.fit_from_history(train_matches)
+
+    print("  [Val] Fitting validation DC …")
+    dc_v = DixonColesModel()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        dc_v.fit(train_matches)
+
+    print("  [Val] Building validation ML features …")
+    df_feat_v = build_ml_features(train_matches, elo_v)
+    ml_v = MLModel()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ml_v._train_silent(df_feat_v)
+
+    # ── evaluate on test matches, record per-match correctness per team ───────
+    LABELS = ["A", "D", "H"]
+    dc_proba, ml_proba, y_true = [], [], []
+    # team → list of (dc_correct, ml_correct) booleans
+    from collections import defaultdict
+    team_hits: dict[str, list[tuple[int, int]]] = defaultdict(list)
+
+    for _, row in test_matches.iterrows():
+        t1, t2  = row["home_team"], row["away_team"]
+        is_home = row["venue"] == "home"
+        as_of   = pd.Timestamp(row["date"])
+        g1, g2  = int(row["home_goals"]), int(row["away_goals"])
+        actual  = "H" if g1 > g2 else ("A" if g1 < g2 else "D")
+        y_true.append(actual)
+
+        dc_p = dc_v.predict_outcome(t1, t2, is_home, elo_v)
+        dc_proba.append([dc_p["A"], dc_p["D"], dc_p["H"]])
+        dc_pred = max(dc_p, key=dc_p.get)
+
+        ml_pred_r = ml_v.predict_match(t1, t2, is_home, elo_v, train_matches, as_of)
+        ml_proba.append([ml_pred_r["A"], ml_pred_r["D"], ml_pred_r["H"]])
+        ml_pred = max(("H", "D", "A"), key=lambda k: ml_pred_r[k])
+
+        dc_ok = int(dc_pred == actual)
+        ml_ok = int(ml_pred == actual)
+        team_hits[t1].append((dc_ok, ml_ok))
+        team_hits[t2].append((dc_ok, ml_ok))
+
+    # ── global weights via inverse log-loss ───────────────────────────────────
+    dc_arr = np.clip(np.array(dc_proba), 1e-6, 1 - 1e-6)
+    ml_arr = np.clip(np.array(ml_proba), 1e-6, 1 - 1e-6)
+
+    dc_ll  = sk_log_loss(y_true, dc_arr, labels=LABELS)
+    ml_ll  = sk_log_loss(y_true, ml_arr, labels=LABELS)
+
+    dc_acc = float(np.mean([LABELS[np.argmax(p)] == a for p, a in zip(dc_proba, y_true)]))
+    ml_acc = float(np.mean([LABELS[np.argmax(p)] == a for p, a in zip(ml_proba, y_true)]))
+
+    global_dc_w = (1.0 / dc_ll) / (1.0 / dc_ll + 1.0 / ml_ll)
+    global_ml_w = 1.0 - global_dc_w
+
+    # ── per-team weights: accuracy-based  x/(x+y) ─────────────────────────────
+    team_weights: dict[str, dict] = {}
+    for team in all_teams:
+        hits = team_hits.get(team)
+        if not hits:  # team wasn't at WC2022 → global fallback
+            team_weights[team] = {"dc": global_dc_w, "ml": global_ml_w,
+                                  "source": "global_fallback"}
+            continue
+        x = sum(h[0] for h in hits) / len(hits)   # DC accuracy for this team
+        y = sum(h[1] for h in hits) / len(hits)   # ML accuracy for this team
+        if x + y == 0:  # both models always wrong → global fallback
+            team_weights[team] = {"dc": global_dc_w, "ml": global_ml_w,
+                                  "source": "global_fallback"}
+        else:
+            team_weights[team] = {"dc": x / (x + y), "ml": y / (x + y),
+                                  "source": f"wc22 ({len(hits)}g dc={x:.0%} ml={y:.0%})"}
+
+    metrics = {
+        "n_test":      len(y_true),
+        "dc_logloss":  round(dc_ll,  4),
+        "ml_logloss":  round(ml_ll,  4),
+        "dc_accuracy": round(dc_acc, 3),
+        "ml_accuracy": round(ml_acc, 3),
+        "dc_weight":   round(global_dc_w, 3),
+        "ml_weight":   round(global_ml_w, 3),
+    }
+    return global_dc_w, global_ml_w, team_weights, metrics
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -266,7 +439,7 @@ class DixonColesModel:
 # ══════════════════════════════════════════════════════════════════════════════
 
 FEATURE_COLS = [
-    "elo_diff",   "rank_diff",  "squad_diff", "venue_home",
+    "elo_diff",   "squad_diff", "venue_home",
     "h_form_pts", "h_form_gf",  "h_form_ga",  "h_form_gd",  "h_win_rate",
     "a_form_pts", "a_form_gf",  "a_form_ga",  "a_form_gd",  "a_win_rate",
 ]
@@ -309,7 +482,6 @@ def _build_feature_row(t1: str, t2: str, is_home: bool,
     af = _team_form(matches, t2, as_of)
     return {
         "elo_diff":    elo.elo_diff(t1, t2),
-        "rank_diff":   FIFA_RANKINGS.get(t2, 50) - FIFA_RANKINGS.get(t1, 50),
         "squad_diff":  SQUAD_STRENGTH.get(t1, 65) - SQUAD_STRENGTH.get(t2, 65),
         "venue_home":  1 if is_home else 0,
         "h_form_pts":  hf["form_pts"], "h_form_gf": hf["form_gf"],
@@ -360,6 +532,18 @@ def _precompute_form(matches: pd.DataFrame, n_games: int = 10) -> dict:
     return form_cache
 
 
+def _tournament_weight(tournament: str) -> float:
+    t = tournament.lower()
+    if "world cup" in t and "qualif" not in t:  return 3.0
+    if "qualif" in t:                            return 2.0
+    if any(x in t for x in ("euro", "copa america", "african cup", "asian cup",
+                             "gold cup", "nations cup")):
+        return 2.0
+    if "nations league" in t:                    return 1.5
+    if "friendly" in t:                          return 0.5
+    return 1.0
+
+
 def build_ml_features(matches: pd.DataFrame, elo: ELOSystem) -> pd.DataFrame:
     matches = matches.sort_values("date").reset_index(drop=True)
     form_cache = _precompute_form(matches)
@@ -373,7 +557,6 @@ def build_ml_features(matches: pd.DataFrame, elo: ELOSystem) -> pd.DataFrame:
 
         rows.append({
             "elo_diff":    elo.elo_diff(h, a),
-            "rank_diff":   FIFA_RANKINGS.get(a, 50) - FIFA_RANKINGS.get(h, 50),
             "squad_diff":  SQUAD_STRENGTH.get(h, 65) - SQUAD_STRENGTH.get(a, 65),
             "venue_home":  1 if row["venue"] == "home" else 0,
             "h_form_pts":  hf["form_pts"], "h_form_gf": hf["form_gf"],
@@ -386,7 +569,7 @@ def build_ml_features(matches: pd.DataFrame, elo: ELOSystem) -> pd.DataFrame:
                             else ("A" if row["home_goals"] < row["away_goals"] else "D")),
             "home_goals":  row["home_goals"],
             "away_goals":  row["away_goals"],
-            "weight":      2.0 if "World Cup" in str(row.get("tournament", "")) else 1.0,
+            "weight":      _tournament_weight(str(row.get("tournament", ""))),
         })
     return pd.DataFrame(rows)
 
@@ -398,10 +581,10 @@ class MLModel:
         self.away_reg = None
         self.le       = LabelEncoder()
 
-    def train(self, df: pd.DataFrame) -> None:
-        y = self.le.fit_transform(df["label"])   # A=0, D=1, H=2
-        X = df[FEATURE_COLS];  w = df["weight"]
-
+    def _fit_core(self, df: pd.DataFrame) -> None:
+        """Shared fitting logic used by both train() and _train_silent()."""
+        y = self.le.fit_transform(df["label"])
+        X = df[FEATURE_COLS]; w = df["weight"]
         X_tr, X_te, y_tr, y_te, w_tr, _ = train_test_split(
             X, y, w, test_size=0.20, random_state=42, stratify=y
         )
@@ -412,18 +595,24 @@ class MLModel:
         )
         self.clf.fit(X_tr, y_tr, sample_weight=w_tr,
                      eval_set=[(X_te, y_te)], verbose=False)
-
         self.home_reg = PoissonRegressor(alpha=0.1, max_iter=300)
         self.away_reg = PoissonRegressor(alpha=0.1, max_iter=300)
         self.home_reg.fit(X_tr, df.loc[X_tr.index, "home_goals"])
         self.away_reg.fit(X_tr, df.loc[X_tr.index, "away_goals"])
+        return X_te, y_te
 
+    def train(self, df: pd.DataFrame) -> None:
+        X_te, y_te = self._fit_core(df)
         preds = self.clf.predict(X_te)
         proba = self.clf.predict_proba(X_te)
         print("\n=== ML Model Performance ===")
         print(classification_report(y_te, preds,
               target_names=self.le.classes_, zero_division=0))
         print(f"  Log-loss : {log_loss(y_te, proba):.4f}")
+
+    def _train_silent(self, df: pd.DataFrame) -> None:
+        """Like train() but prints nothing — used during validation."""
+        self._fit_core(df)
 
     def predict(self, feat_row: dict) -> dict:
         X     = pd.DataFrame([feat_row])[FEATURE_COLS]
@@ -472,11 +661,20 @@ class EnsembleModel:
     """
 
     def __init__(self, dc: DixonColesModel, ml: MLModel,
-                 dc_weight: float = 0.55):
-        self.dc        = dc
-        self.ml        = ml
-        self.dc_weight = dc_weight
-        self.ml_weight = 1.0 - dc_weight
+                 dc_weight: float = 0.55,
+                 team_weights: dict | None = None):
+        self.dc           = dc
+        self.ml           = ml
+        self.dc_weight    = dc_weight          # global fallback
+        self.ml_weight    = 1.0 - dc_weight
+        self.team_weights = team_weights or {}  # per-team override
+
+    def _match_weights(self, t1: str, t2: str) -> tuple[float, float]:
+        """Average the two teams' per-team DC/ML weights."""
+        w1 = self.team_weights.get(t1, {"dc": self.dc_weight, "ml": self.ml_weight})
+        w2 = self.team_weights.get(t2, {"dc": self.dc_weight, "ml": self.ml_weight})
+        dc_w = (w1["dc"] + w2["dc"]) / 2.0
+        return dc_w, 1.0 - dc_w
 
     def predict_outcome(self, t1: str, t2: str, is_home: bool,
                         elo: ELOSystem | None = None) -> dict[str, float]:
@@ -505,12 +703,14 @@ class EnsembleModel:
 
         ml_p = {k: ml_res[k] for k in ("H", "D", "A")}
 
+        dc_w, ml_w = self._match_weights(t1, t2)
+
         # Ensemble outcome probs
-        ens_p = {k: self.dc_weight * dc_p[k] + self.ml_weight * ml_p[k]
+        ens_p = {k: dc_w * dc_p[k] + ml_w * ml_p[k]
                  for k in ("H", "D", "A")}
 
         # Ensemble scoreline matrix = weighted average of DC + ML matrices
-        raw_mat = self.dc_weight * dc_mat + self.ml_weight * ml_mat
+        raw_mat = dc_w * dc_mat + ml_w * ml_mat
         raw_mat = np.clip(raw_mat, 1e-12, None)
 
         # Rescale so that H/D/A totals exactly match ens_p
@@ -531,8 +731,8 @@ class EnsembleModel:
         scaled /= scaled.sum()
 
         # Ensemble xG = weighted average of individual xGs
-        ens_xg1 = self.dc_weight * dc_l1 + self.ml_weight * ml_res["xg1"]
-        ens_xg2 = self.dc_weight * dc_l2 + self.ml_weight * ml_res["xg2"]
+        ens_xg1 = dc_w * dc_l1 + ml_w * ml_res["xg1"]
+        ens_xg2 = dc_w * dc_l2 + ml_w * ml_res["xg2"]
 
         return {
             "ml_probs": ml_p,
