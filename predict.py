@@ -21,6 +21,20 @@ from models import ELOSystem, EnsembleModel
 # 1.  IS-HOME HELPER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _get_odds(t1: str, t2: str) -> dict | None:
+    """
+    Look up sport5 odds for a fixture, handling reversed team order.
+    If stored as (t2, t1) instead of (t1, t2), swaps H and A automatically.
+    """
+    odds = SPORT5_ODDS.get((t1, t2))
+    if odds is not None:
+        return odds
+    rev = SPORT5_ODDS.get((t2, t1))
+    if rev is not None:
+        return {"H": rev["A"], "D": rev["D"], "A": rev["H"]}
+    return None
+
+
 def is_home_game(t1: str, t2: str) -> bool:
     """True only when a host nation plays at their own stadium."""
     return t1 in HOST_NATIONS and t2 not in HOST_NATIONS
@@ -66,11 +80,11 @@ def optimal_prediction(ens_matrix: np.ndarray,
     method = "ev_optimised" | "most_likely_score"
     """
     if odds is None:
-        # No sport5 odds → recommend most likely scoreline
+        # No sport5 odds → recommend most likely scoreline, EV=None signals "unknown"
         best_g1, best_g2 = np.unravel_index(
             np.argmax(ens_matrix[:max_goals+1, :max_goals+1]), (max_goals+1, max_goals+1)
         )
-        return (int(best_g1), int(best_g2)), float(ens_matrix[best_g1, best_g2]), "most_likely_score"
+        return (int(best_g1), int(best_g2)), None, "most_likely_score"
 
     best_score = (1, 0)
     best_ev    = -1.0
@@ -99,7 +113,7 @@ def predict_group_stage(ensemble: EnsembleModel,
     for t1, t2, grp, md in ALL_GROUP_FIXTURES:
         home = is_home_game(t1, t2)
         pred = ensemble.predict_all(t1, t2, home, elo, matches, as_of)
-        odds = SPORT5_ODDS.get((t1, t2)) or SPORT5_ODDS.get((t2, t1))
+        odds = _get_odds(t1, t2)
         best_score, ev, method = optimal_prediction(
             pred["ens_matrix"], pred["ens_probs"], odds
         )
@@ -110,7 +124,7 @@ def predict_group_stage(ensemble: EnsembleModel,
             "dc_H": pred["dc_probs"]["H"], "dc_D": pred["dc_probs"]["D"], "dc_A": pred["dc_probs"]["A"],
             "ens_H": pred["ens_probs"]["H"], "ens_D": pred["ens_probs"]["D"], "ens_A": pred["ens_probs"]["A"],
             "xg1": pred["xg1"], "xg2": pred["xg2"],
-            "rec_score": best_score, "rec_ev": round(ev, 4),
+            "rec_score": best_score, "rec_ev": round(ev, 3) if ev is not None else None,
             "rec_method": method, "sport5_odds": odds,
             "_matrix": pred["ens_matrix"],
         })
@@ -135,7 +149,7 @@ def predict_round1(ensemble: EnsembleModel,
         home = is_home_game(t1, t2)
         pred = ensemble.predict_all(t1, t2, home, elo, matches, as_of)
 
-        odds = SPORT5_ODDS.get((t1, t2)) or SPORT5_ODDS.get((t2, t1))
+        odds = _get_odds(t1, t2)
         best_score, ev, method = optimal_prediction(
             pred["ens_matrix"], pred["ens_probs"], odds
         )
@@ -160,7 +174,7 @@ def predict_round1(ensemble: EnsembleModel,
             "xg2":      pred["xg2"],
             # ── sport5 recommendation ────────────────────────────────────────
             "rec_score":  best_score,
-            "rec_ev":     round(ev, 4),
+            "rec_ev":     round(ev, 3) if ev is not None else None,
             "rec_method": method,
             "sport5_odds": odds,
             # ── scoreline matrix (keep for charts) ───────────────────────────
@@ -204,18 +218,20 @@ def print_group_stage_summary(results: list[dict]) -> None:
             dc  = f"{r['dc_H']:.0%}/{r['dc_D']:.0%}/{r['dc_A']:.0%}"
             ens = f"{r['ens_H']:.0%}/{r['ens_D']:.0%}/{r['ens_A']:.0%}"
             xg  = f"{r['xg1']:.1f}-{r['xg2']:.1f}"
-            rec = f"{r['rec_score'][0]}-{r['rec_score'][1]}"
-            ev  = f"{r['rec_ev']:.3f}"
+            rec      = f"{r['rec_score'][0]}-{r['rec_score'][1]}"
+            ev       = f"{r['rec_ev']:.2f}" if r["rec_ev"] is not None else "  N/A"
+            ev_star  = "" if r["rec_ev"] is not None else "*"
             home_tag = " (H)" if r["is_home"] else ""
             print(f"  {md:>2}  {r['group']:>3}  "
                   f"{r['team1']+home_tag:<25}  {r['team2']:<25}  "
                   f"{ml:>14}  {dc:>14}  {ens:>15}  "
-                  f"{xg:>7}  {rec:>6}  {ev:>5}")
+                  f"{xg:>7}  {rec:>6}  {ev:>6}{ev_star}")
 
         print(LINE)
 
-    print("\n  (H) = host-nation home advantage  |  Rec = recommended sport5 score")
-    print("  EV  = expected sport5 pts  |  * = most-probable score (no odds provided)")
+    print("\n  (H) = host-nation home advantage")
+    print("  Rec = EV-optimised sport5 score (or most probable if * = no odds entered)")
+    print("  EV  = expected sport5 points for Rec prediction  (base_pts + 4 for exact)")
 
 
 # backward-compat alias
@@ -239,25 +255,37 @@ def print_sport5_strategy(results: list[dict]) -> None:
     for r in results:
         if r["sport5_odds"] is None:
             continue
-        odds = r["sport5_odds"]
-        ev_h = odds["H"] * r["ens_H"]
-        ev_d = odds["D"] * r["ens_D"]
-        ev_a = odds["A"] * r["ens_A"]
-        evs  = {"H": ev_h, "D": ev_d, "A": ev_a}
+        odds  = r["sport5_odds"]
+        mat   = r["_matrix"]
+        probs = {"H": r["ens_H"], "D": r["ens_D"], "A": r["ens_A"]}
+        n     = mat.shape[0]
 
-        favourite = max(r["ens_H"], r["ens_D"], r["ens_A"])
-        fav_key   = "H" if r["ens_H"] == favourite else ("D" if r["ens_D"] == favourite else "A")
-        best_ev   = max(evs, key=evs.__getitem__)
+        # Full EV per outcome = best scoreline for that outcome
+        # EV(score s in outcome X) = odds[X]*P(X) + 4*P(s)
+        # The odds[X]*P(X) term is constant within outcome X, so best score = most likely score in X.
+        # Full EV for outcome X = odds[X]*P(X) + 4 * max_{s in X} P(s)
+        def best_ev_for_outcome(out):
+            max_p_exact = max(
+                (mat[g1, g2] for g1 in range(n) for g2 in range(n) if _outcome(g1, g2) == out),
+                default=0.0
+            )
+            return odds[out] * probs[out] + 4 * max_p_exact
 
-        if best_ev != fav_key:
+        evs = {out: best_ev_for_outcome(out) for out in ("H", "D", "A")}
+
+        fav_key  = max(probs, key=probs.__getitem__)
+        best_out = max(evs, key=evs.__getitem__)   # outcome whose best score has highest full EV
+
+        if best_out != fav_key:
             t1, t2 = r["team1"], r["team2"]
             label  = {"H": f"{t1} wins", "D": "Draw", "A": f"{t2} wins"}
+            rec    = r["rec_score"]
             print(f"\n  {t1} vs {t2}  (Group {r['group']})")
             print(f"    Most probable : {label[fav_key]}  "
-                  f"({r['ens_'+fav_key]:.0%} prob, EV={evs[fav_key]:.2f})")
-            print(f"    Best EV pick  : {label[best_ev]}  "
-                  f"({r['ens_'+best_ev]:.0%} prob, EV={evs[best_ev]:.2f})  ← RECOMMEND")
-            print(f"    Rec. scoreline: {r['rec_score'][0]}-{r['rec_score'][1]}")
+                  f"({probs[fav_key]:.0%} prob,  full EV={evs[fav_key]:.2f})")
+            print(f"    Best EV pick  : {label[best_out]}  "
+                  f"({probs[best_out]:.0%} prob,  full EV={evs[best_out]:.2f})  ← RECOMMEND")
+            print(f"    Rec. scoreline: {rec[0]}-{rec[1]}  (total EV={r['rec_ev']:.2f})")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

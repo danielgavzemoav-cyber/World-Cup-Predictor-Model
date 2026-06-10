@@ -159,8 +159,8 @@ SQUAD_STRENGTH = {
 
 def get_initial_elo(team: str) -> float:
     """Initialise ELO from FIFA ranking: top teams ~2190, weakest ~1350."""
-    rank = FIFA_RANKINGS.get(team, 60)
-    return max(1350.0, 2200.0 - rank * 10.0)
+    rank = FIFA_RANKINGS.get(team, 85)
+    return max(670.0, 2200.0 - rank * 18.0)
 
 
 # ── sport5 "5 חבר'ה" odds ────────────────────────────────────────────────────
@@ -171,8 +171,46 @@ def get_initial_elo(team: str) -> float:
 # Leave as None to fall back to highest-probability recommendation.
 
 SPORT5_ODDS: dict = {
-    # Example (replace with real app values):
-    # ("Mexico", "South Africa"): {"H": 1.9, "D": 4.2, "A": 7.5},
+    # Format: (team1, team2): {"H": team1-wins pts, "D": draw pts, "A": team2-wins pts}
+    # Stored exactly as shown in the sport5 app (team order may differ from fixtures).
+    # The lookup in predict.py handles reversed pairs automatically.
+    #
+    # ── Group A ───────────────────────────────────────────────────────────────
+    ("Mexico",                   "South Africa"):          {"H": 2.0, "D": 4.0, "A": 6.0 },
+    ("South Korea",              "Czechia"):               {"H": 3.0, "D": 3.5, "A": 3.0 },
+    # ── Group B ───────────────────────────────────────────────────────────────
+    ("Canada",                   "Bosnia and Herzegovina"):{"H": 2.5, "D": 3.0, "A": 3.0 },
+    ("Qatar",                    "Switzerland"):           {"H": 8.0, "D": 5.0, "A": 1.5 },
+    # ── Group C ───────────────────────────────────────────────────────────────
+    ("Brazil",                   "Morocco"):               {"H": 2.0, "D": 4.0, "A": 5.0 },
+    ("Haiti",                    "Scotland"):              {"H": 8.0, "D": 5.0, "A": 1.5 },
+    # ── Group D ───────────────────────────────────────────────────────────────
+    ("USA",                      "Paraguay"):              {"H": 2.0, "D": 3.5, "A": 4.0 },
+    ("Australia",                "Turkey"):                {"H": 4.5, "D": 4.0, "A": 2.0 },
+    # ── Group E ───────────────────────────────────────────────────────────────
+    ("Germany",                  "Curaçao"):               {"H": 1.5, "D": 10.0,"A": 15.0},
+    ("Ivory Coast",              "Ecuador"):               {"H": 3.5, "D": 3.0, "A": 2.5 },
+    # ── Group F ───────────────────────────────────────────────────────────────
+    ("Netherlands",              "Japan"):                 {"H": 2.0, "D": 3.0, "A": 3.5 },
+    ("Sweden",                   "Tunisia"):               {"H": 2.0, "D": 3.5, "A": 4.0 },
+    # ── Group G ───────────────────────────────────────────────────────────────
+    ("Belgium",                  "Egypt"):                 {"H": 2.0, "D": 4.0, "A": 5.0 },
+    ("Iran",                     "New Zealand"):           {"H": 2.0, "D": 4.5, "A": 4.0 },
+    # ── Group H ───────────────────────────────────────────────────────────────
+    ("Spain",                    "Cape Verde"):            {"H": 1.5, "D": 8.0, "A": 12.0},
+    ("Uruguay",                  "Saudi Arabia"):          {"H": 2.0, "D": 5.0, "A": 6.0 },
+    # ── Group I ───────────────────────────────────────────────────────────────
+    ("France",                   "Senegal"):               {"H": 1.5, "D": 6.0, "A": 8.0 },
+    ("Iraq",                     "Norway"):                {"H": 8.0, "D": 6.0, "A": 1.5 },
+    # ── Group J ───────────────────────────────────────────────────────────────
+    ("Argentina",                "Algeria"):               {"H": 1.5, "D": 4.5, "A": 10.0},
+    ("Austria",                  "Jordan"):                {"H": 1.5, "D": 5.5, "A": 8.0 },
+    # ── Group K ───────────────────────────────────────────────────────────────
+    ("Portugal",                 "DR Congo"):              {"H": 1.5, "D": 6.0, "A": 10.0},
+    ("Colombia",                 "Uzbekistan"):            {"H": 1.5, "D": 5.5, "A": 8.0 },
+    # ── Group L ───────────────────────────────────────────────────────────────
+    ("England",                  "Croatia"):               {"H": 2.0, "D": 4.0, "A": 5.0 },
+    ("Ghana",                    "Panama"):                {"H": 2.0, "D": 4.0, "A": 4.0 },
 }
 
 SPORT5_EXACT_BONUS_GROUP    = 4   # extra pts for exact scoreline in group stage
