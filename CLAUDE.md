@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## GitHub sync reminder
+
+Every 30 minutes of active work, ask the user: "Want me to commit and push the current changes to GitHub?"  
+Only push if they say yes. Never push automatically.
+
 ## Running the model
 
 ```bash
