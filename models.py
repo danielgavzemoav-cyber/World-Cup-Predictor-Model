@@ -669,11 +669,22 @@ class EnsembleModel:
         self.ml_weight    = 1.0 - dc_weight
         self.team_weights = team_weights or {}  # per-team override
 
-    def _match_weights(self, t1: str, t2: str) -> tuple[float, float]:
-        """Average the two teams' per-team DC/ML weights."""
+    def _match_weights(self, t1: str, t2: str,
+                       elo: "ELOSystem | None" = None) -> tuple[float, float]:
+        """Average the two teams' per-team DC/ML weights, then boost DC for large ELO gaps.
+
+        ML struggles to extrapolate on extreme mismatches; DC's ELO-scaled λ handles
+        them correctly. Each 100 ELO points of gap adds 0.10 to the DC weight, capped
+        at 0.95 (e.g. a 300-pt gap pushes DC from ~0.52 → 0.82).
+        """
         w1 = self.team_weights.get(t1, {"dc": self.dc_weight, "ml": self.ml_weight})
         w2 = self.team_weights.get(t2, {"dc": self.dc_weight, "ml": self.ml_weight})
         dc_w = (w1["dc"] + w2["dc"]) / 2.0
+        if elo is not None:
+            e1 = elo.ratings.get(t1, 1500)
+            e2 = elo.ratings.get(t2, 1500)
+            gap_bonus = min(0.30, abs(e1 - e2) / 1000.0)
+            dc_w = min(0.95, dc_w + gap_bonus)
         return dc_w, 1.0 - dc_w
 
     def predict_outcome(self, t1: str, t2: str, is_home: bool,
@@ -703,7 +714,7 @@ class EnsembleModel:
 
         ml_p = {k: ml_res[k] for k in ("H", "D", "A")}
 
-        dc_w, ml_w = self._match_weights(t1, t2)
+        dc_w, ml_w = self._match_weights(t1, t2, elo)
 
         # Ensemble outcome probs
         ens_p = {k: dc_w * dc_p[k] + ml_w * ml_p[k]

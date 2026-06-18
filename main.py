@@ -25,6 +25,14 @@ from models import (ELOSystem, DixonColesModel, MLModel, EnsembleModel,
 from predict import (predict_group_stage, predict_round1,
                      print_group_stage_summary, print_sport5_strategy,
                      plot_all_round1, plot_scoreline_heatmap)
+# בתחילת data.py, אחרי כל ה-imports:
+try:
+    from players_algorithm.team_strength import get_player_strength
+    SQUAD_STRENGTH = get_player_strength()
+    print("  [Squad] Using player-based SPI strength.")
+except Exception as e:
+    print(f"  [Squad] Falling back to manual SQUAD_STRENGTH ({e})")
+    # SQUAD_STRENGTH נשאר כמו שהוא
 
 
 # ── toggle what to generate ───────────────────────────────────────────────────
@@ -97,6 +105,7 @@ def main():
     ml.train(df_feat)
 
     # ── 7. Build ensemble with data-driven per-team weights ───────────────────
+    dc_w, ml_w = 0.75, 0.25   # override: trust DC more; ML over-credits underdogs
     print(f"\n[8] Building ensemble  (global DC {dc_w:.0%} / ML {ml_w:.0%}, per-team from 2024–2026 test) …")
     ensemble = EnsembleModel(dc, ml, dc_weight=dc_w, team_weights=team_weights)
 
@@ -138,19 +147,35 @@ def _demo_dynamic_elo(ensemble, elo, matches):
     Uses hypothetical results – replace with real scores as the tournament progresses.
     """
     print("\n" + "=" * 60)
-    print("  DYNAMIC ELO DEMO – Round 2 (after hypothetical R1 results)")
+    print("  DYNAMIC ELO – Round 2 (after actual R1 results)")
     print("=" * 60)
 
-    # Example: enter actual Round-1 scores here after the games are played
+    # Actual Round-1 results
     hypothetical_r1_results = [
-        ("Mexico",      "South Africa",  2, 0),
-        ("South Korea", "Czechia",       1, 1),
-        ("Brazil",      "Morocco",       2, 1),
-        ("USA",         "Paraguay",      1, 0),
-        ("Germany",     "Curaçao",       4, 0),
-        ("Argentina",   "Algeria",       3, 0),
-        ("France",      "Senegal",       2, 0),
-        ("England",     "Croatia",       1, 0),
+        ("Mexico",                    "South Africa",           2, 0),
+        ("South Korea",               "Czechia",                2, 1),
+        ("Canada",                    "Bosnia and Herzegovina", 1, 1),
+        ("USA",                       "Paraguay",               4, 1),
+        ("Qatar",                     "Switzerland",            1, 1),
+        ("Brazil",                    "Morocco",                1, 1),
+        ("Haiti",                     "Scotland",               0, 1),
+        ("Australia",                 "Turkey",                 2, 0),
+        ("Germany",                   "Curaçao",                7, 1),
+        ("Ivory Coast",               "Ecuador",                1, 0),
+        ("Netherlands",               "Japan",                  2, 2),
+        ("Sweden",                    "Tunisia",                5, 1),
+        ("Belgium",                   "Egypt",                  1, 1),
+        ("Iran",                      "New Zealand",            2, 2),
+        ("Spain",                     "Cape Verde",             0, 0),
+        ("Saudi Arabia",              "Uruguay",                1, 1),
+        ("France",                    "Senegal",                3, 1),
+        ("Iraq",                      "Norway",                 1, 4),
+        ("Argentina",                 "Algeria",                3, 0),
+        ("Austria",                   "Jordan",                 3, 1),
+        ("Portugal",                  "DR Congo",               1, 1),
+        ("Uzbekistan",                "Colombia",               1, 3),
+        ("England",                   "Croatia",                4, 2),
+        ("Ghana",                     "Panama",                 1, 0),
     ]
 
     snap = elo.snapshot()   # save pre-tournament ELO
