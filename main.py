@@ -105,9 +105,15 @@ def main():
     ml.train(df_feat)
 
     # ── 7. Build ensemble with data-driven per-team weights ───────────────────
-    dc_w, ml_w = 0.75, 0.25   # override: trust DC more; ML over-credits underdogs
+    dc_w, ml_w = 1.00, 0.00   # override: 100% DC, ML over-credits underdogs
     print(f"\n[8] Building ensemble  (global DC {dc_w:.0%} / ML {ml_w:.0%}, per-team from 2024–2026 test) …")
-    ensemble = EnsembleModel(dc, ml, dc_weight=dc_w, team_weights=team_weights)
+    ensemble = EnsembleModel(dc, ml, dc_weight=dc_w, team_weights={})
+
+    # ── 8b. Feed actual in-tournament results into ELO ────────────────────────
+    # Applied after training (not before) so historical ML/DC features aren't
+    # contaminated by post-tournament ratings.
+    print("\n[8b] Updating ELO with actual WC2026 results played so far (R1+R2) …")
+    apply_actual_results(elo)
 
     # ── 9. Predict all 72 group-stage games ──────────────────────────────────
     print("\n[9] Predicting all 72 group-stage fixtures (3 matchdays × 24 games) …")
@@ -134,24 +140,20 @@ def main():
             plot_scoreline_heatmap(r, max_goals=5, save_dir=CHART_DIR)
         print("[Heatmaps] Done.")
 
-    # ── 14. Dynamic ELO demo ──────────────────────────────────────────────────
-    _demo_dynamic_elo(ensemble, elo, matches)
-
     elapsed = time.time() - t0
     print(f"\n✅  Done in {elapsed:.1f}s")
 
 
-def _demo_dynamic_elo(ensemble, elo, matches):
+def apply_actual_results(elo: "ELOSystem") -> None:
     """
-    Shows how ELO updates after round-1 results feed into round-2 predictions.
-    Uses hypothetical results – replace with real scores as the tournament progresses.
-    """
-    print("\n" + "=" * 60)
-    print("  DYNAMIC ELO – Round 2 (after actual R1 results)")
-    print("=" * 60)
+    Feeds real WC2026 group-stage results into the live ELO ratings, so that
+    predictions for matchdays not yet played (e.g. matchday 3) reflect actual
+    in-tournament form rather than pre-tournament strength alone.
 
-    # Actual Round-1 results
-    hypothetical_r1_results = [
+    Extend this list with each round's real scores as the tournament progresses.
+    """
+    actual_results = [
+        # ── Round 1 (matchday 1) ────────────────────────────────────────────
         ("Mexico",                    "South Africa",           2, 0),
         ("South Korea",               "Czechia",                2, 1),
         ("Canada",                    "Bosnia and Herzegovina", 1, 1),
@@ -176,33 +178,42 @@ def _demo_dynamic_elo(ensemble, elo, matches):
         ("Uzbekistan",                "Colombia",               1, 3),
         ("England",                   "Croatia",                4, 2),
         ("Ghana",                     "Panama",                 1, 0),
+        # ── Round 2 (matchday 2) ────────────────────────────────────────────
+        ("Czechia",                   "South Africa",           1, 1),
+        ("Mexico",                    "South Korea",            1, 0),
+        ("Switzerland",               "Bosnia and Herzegovina", 4, 1),
+        ("Canada",                    "Qatar",                  6, 0),
+        ("Scotland",                  "Morocco",                0, 1),
+        ("Brazil",                    "Haiti",                  3, 0),
+        ("USA",                       "Australia",              2, 0),
+        ("Turkey",                    "Paraguay",                0, 1),
+        ("Germany",                   "Ivory Coast",            2, 1),
+        ("Ecuador",                   "Curaçao",                0, 0),
+        ("Netherlands",               "Sweden",                 5, 1),
+        ("Tunisia",                   "Japan",                  0, 4),
+        ("Belgium",                   "Iran",                   0, 0),
+        ("New Zealand",               "Egypt",                  1, 3),
+        ("Spain",                     "Saudi Arabia",           4, 0),
+        ("Uruguay",                   "Cape Verde",             2, 2),
+        ("France",                    "Iraq",                   3, 0),
+        ("Norway",                    "Senegal",                3, 2),
+        ("Argentina",                 "Austria",                2, 0),
+        ("Jordan",                    "Algeria",                1, 2),
+        ("Portugal",                  "Uzbekistan",             5, 0),
+        ("Colombia",                  "DR Congo",               1, 0),
+        ("England",                   "Ghana",                  0, 0),
+        ("Panama",                    "Croatia",                0, 1),
     ]
 
-    snap = elo.snapshot()   # save pre-tournament ELO
-    print("\n  Updating ELO with R1 results …")
-    for t1, t2, g1, g2 in hypothetical_r1_results:
-        old_elo_t1 = elo.ratings.get(t1, 1700)
+    for t1, t2, g1, g2 in actual_results:
         elo.update(t1, t2, g1, g2)
-        new_elo_t1 = elo.ratings.get(t1, 1700)
-        print(f"    {t1} vs {t2}  {g1}-{g2}  "
-              f"→  {t1} ELO {old_elo_t1:.0f} → {new_elo_t1:.0f}")
 
-    print("\n  Sample Round-2 predictions (using updated ELO):")
-    sample_r2 = [
-        ("Mexico",    "South Korea", "A"),
-        ("Brazil",    "Haiti",       "C"),
-        ("Argentina", "Austria",     "J"),
-    ]
-    for t1, t2, grp in sample_r2:
-        from predict import is_home_game
-        home = is_home_game(t1, t2)
-        pred = ensemble.predict_all(t1, t2, home, elo, matches)
-        ep   = pred["ens_probs"]
-        print(f"    Group {grp}: {t1} vs {t2}  →  "
-              f"W:{ep['H']:.0%}  D:{ep['D']:.0%}  L:{ep['A']:.0%}  "
-              f"xG: {pred['xg1']:.1f}-{pred['xg2']:.1f}")
-
-    elo.restore(snap)   # reset so further calls use pre-tournament ELO
+    top5 = sorted(
+        [(t, v) for t, v in elo.ratings.items() if t in ALL_TEAMS],
+        key=lambda x: x[1], reverse=True
+    )[:5]
+    print(f"    Applied {len(actual_results)} actual results (R1+R2).")
+    print("    Top-5 ELO after R1+R2: " + ", ".join(f"{t} {v:.0f}" for t, v in top5))
 
 
 if __name__ == "__main__":

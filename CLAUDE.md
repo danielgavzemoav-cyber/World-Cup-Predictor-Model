@@ -42,7 +42,8 @@ So `EV(predict G1-G2) = odds[result] × P(result) + 4 × P(exact G1-G2)`.
 6. `DixonColesModel.fit()` on full data
 7. `build_ml_features()` + `MLModel.train()` on full data
 8. `EnsembleModel(dc, ml, dc_weight=dc_w, team_weights=team_weights)` — per-team weights averaged for each match
-9. `predict_group_stage()` → `print_group_stage_summary()` → `print_sport5_strategy()`
+9. `apply_actual_results(elo)` — feeds real WC2026 results played so far into `elo.ratings` (after training, so historical ML/DC features aren't contaminated by post-tournament ratings)
+10. `predict_group_stage()` → `print_group_stage_summary()` → `print_sport5_strategy()`
 
 ## Key design decisions
 
@@ -64,5 +65,5 @@ This makes strong-vs-weak mismatches produce realistic xG (e.g. Germany vs Cura�
 ## Updating for a new round
 
 1. Open `data.py`, fill in `SPORT5_ODDS` with the odds shown in the sport5 app for that round.
-2. Update `hypothetical_r1_results` in `_demo_dynamic_elo()` with actual scores from completed rounds.
+2. Append that round's real scores to `actual_results` in `apply_actual_results()` (`main.py`) — this feeds `elo.ratings` so later matchdays' predictions reflect actual in-tournament form.
 3. Run `python main.py`.

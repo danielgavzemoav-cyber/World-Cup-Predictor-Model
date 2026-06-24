@@ -680,7 +680,7 @@ class EnsembleModel:
         w1 = self.team_weights.get(t1, {"dc": self.dc_weight, "ml": self.ml_weight})
         w2 = self.team_weights.get(t2, {"dc": self.dc_weight, "ml": self.ml_weight})
         dc_w = (w1["dc"] + w2["dc"]) / 2.0
-        if elo is not None:
+        if elo is not None and dc_w < 1.0:
             e1 = elo.ratings.get(t1, 1500)
             e2 = elo.ratings.get(t2, 1500)
             gap_bonus = min(0.30, abs(e1 - e2) / 1000.0)
