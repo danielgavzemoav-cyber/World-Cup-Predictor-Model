@@ -112,7 +112,7 @@ def main():
     # ── 8b. Feed actual in-tournament results into ELO ────────────────────────
     # Applied after training (not before) so historical ML/DC features aren't
     # contaminated by post-tournament ratings.
-    print("\n[8b] Updating ELO with actual WC2026 results played so far (R1+R2) …")
+    print("\n[8b] Updating ELO with actual WC2026 results played so far (R1+R2+R3) …")
     apply_actual_results(elo)
 
     # ── 9. Predict all 72 group-stage games ──────────────────────────────────
@@ -203,6 +203,31 @@ def apply_actual_results(elo: "ELOSystem") -> None:
         ("Colombia",                  "DR Congo",               1, 0),
         ("England",                   "Ghana",                  0, 0),
         ("Panama",                    "Croatia",                0, 1),
+        # ── Round 3 (matchday 3) ────────────────────────────────────────────
+        ("Mexico",                    "Czechia",                3, 0),
+        ("South Korea",               "South Africa",           0, 1),
+        ("Switzerland",               "Canada",                 2, 1),
+        ("Bosnia and Herzegovina",    "Qatar",                  3, 1),
+        ("Brazil",                    "Scotland",               3, 0),
+        ("Morocco",                   "Haiti",                  4, 2),
+        ("Turkey",                    "USA",                    3, 2),
+        ("Paraguay",                  "Australia",              0, 0),
+        ("Ecuador",                   "Germany",                2, 1),
+        ("Ivory Coast",               "Curaçao",                2, 0),
+        ("Netherlands",               "Tunisia",                3, 1),
+        ("Japan",                     "Sweden",                 1, 1),
+        ("Belgium",                   "New Zealand",            5, 1),
+        ("Egypt",                     "Iran",                   1, 1),
+        ("Spain",                     "Uruguay",                1, 0),
+        ("Cape Verde",                "Saudi Arabia",           0, 0),
+        ("France",                    "Norway",                 4, 1),
+        ("Senegal",                   "Iraq",                   5, 0),
+        ("Argentina",                 "Jordan",                 3, 1),
+        ("Austria",                   "Algeria",                3, 3),
+        ("Colombia",                  "Portugal",               0, 0),
+        ("DR Congo",                  "Uzbekistan",             3, 1),
+        ("England",                   "Panama",                 2, 0),
+        ("Croatia",                   "Ghana",                  2, 1),
     ]
 
     for t1, t2, g1, g2 in actual_results:
@@ -212,8 +237,8 @@ def apply_actual_results(elo: "ELOSystem") -> None:
         [(t, v) for t, v in elo.ratings.items() if t in ALL_TEAMS],
         key=lambda x: x[1], reverse=True
     )[:5]
-    print(f"    Applied {len(actual_results)} actual results (R1+R2).")
-    print("    Top-5 ELO after R1+R2: " + ", ".join(f"{t} {v:.0f}" for t, v in top5))
+    print(f"    Applied {len(actual_results)} actual results (R1+R2+R3).")
+    print("    Top-5 ELO after R1+R2+R3: " + ", ".join(f"{t} {v:.0f}" for t, v in top5))
 
 
 if __name__ == "__main__":
