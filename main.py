@@ -24,6 +24,7 @@ from models import (ELOSystem, DixonColesModel, MLModel, EnsembleModel,
                     tune_elo_k, validate_ensemble_weights)
 from predict import (predict_group_stage, predict_round1,
                      print_group_stage_summary, print_sport5_strategy,
+                     predict_knockout_stage, print_knockout_summary,
                      plot_all_round1, plot_scoreline_heatmap)
 # בתחילת data.py, אחרי כל ה-imports:
 try:
@@ -128,12 +129,20 @@ def main():
     else:
         print("\n[Sport5] No odds entered in data.py::SPORT5_ODDS yet.")
 
-    # ── 12. Pie charts (round 1 only) ─────────────────────────────────────────
+    # ── 12. Round of 32 knockout predictions ─────────────────────────────────
+    print("\n[12] Predicting Round of 32 (16 knockout fixtures) …")
+    ko_results = predict_knockout_stage(ensemble, elo, matches)
+    print_knockout_summary(ko_results)
+    from data import SPORT5_EXACT_BONUS_KNOCKOUT
+    print_sport5_strategy(ko_results, exact_bonus=SPORT5_EXACT_BONUS_KNOCKOUT,
+                          title="SPORT5 KNOCKOUT STRATEGY – GAMES WORTH TAKING A RISK ON")
+
+    # ── 14. Pie charts (round 1 only) ─────────────────────────────────────────
     if GENERATE_PIES:
         r1 = [r for r in results if r["matchday"] == 1]
         plot_all_round1(r1, save_dir=CHART_DIR)
 
-    # ── 13. Heat-maps (round 1 only) ──────────────────────────────────────────
+    # ── 15. Heat-maps (round 1 only) ──────────────────────────────────────────
     if GENERATE_HEATMAPS:
         print(f"\n[Heatmaps] Saving scoreline heat-maps for MD1 to '{CHART_DIR}/' …")
         for r in [r for r in results if r["matchday"] == 1]:

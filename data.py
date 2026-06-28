@@ -288,7 +288,43 @@ SPORT5_ODDS: dict = {
     # ── Group L ───────────────────────────────────────────────────────────────
     ("England",                  "Panama"):                {"H": 1.5, "D": 6.5, "A": 12.0},
     ("Ghana",                    "Croatia"):                {"H": 5.0, "D": 4.0, "A": 2.0 },
+    # ── Round of 32 ───────────────────────────────────────────────────────────
+    ("Canada",                   "South Africa"):          {"H": 4,   "D": 7,   "A": 9  },
+    ("Japan",                    "Brazil"):                {"H": 10,  "D": 7,   "A": 4  },
+    ("Paraguay",                 "Germany"):               {"H": 15,  "D": 9,   "A": 3  },
+    ("Netherlands",              "Morocco"):               {"H": 4,   "D": 6,   "A": 7  },
+    ("Norway",                   "Ivory Coast"):           {"H": 4,   "D": 7,   "A": 8  },
+    ("Sweden",                   "France"):                {"H": 20,  "D": 10,  "A": 3  },
+    ("Ecuador",                  "Mexico"):                {"H": 10,  "D": 8,   "A": 4  },
+    ("DR Congo",                 "England"):               {"H": 24,  "D": 12,  "A": 3  },
+    ("Senegal",                  "Belgium"):               {"H": 12,  "D": 8,   "A": 4  },
+    ("Bosnia and Herzegovina",   "USA"):                   {"H": 12,  "D": 8,   "A": 3  },
+    ("Austria",                  "Spain"):                 {"H": 24,  "D": 10,  "A": 3  },
+    ("Croatia",                  "Portugal"):              {"H": 12,  "D": 6,   "A": 4  },
+    ("Algeria",                  "Switzerland"):           {"H": 12,  "D": 8,   "A": 4  },
+    ("Egypt",                    "Australia"):             {"H": 5,   "D": 6,   "A": 6  },
+    ("Cape Verde",               "Argentina"):             {"H": 26,  "D": 14,  "A": 3  },
+    ("Ghana",                    "Colombia"):              {"H": 14,  "D": 8,   "A": 3  },
 }
 
-SPORT5_EXACT_BONUS_GROUP    = 4   # extra pts for exact scoreline in group stage
+KNOCKOUT_R32_FIXTURES = [
+    ("Canada",                   "South Africa"),
+    ("Japan",                    "Brazil"),
+    ("Paraguay",                 "Germany"),
+    ("Netherlands",              "Morocco"),
+    ("Norway",                   "Ivory Coast"),
+    ("Sweden",                   "France"),
+    ("Ecuador",                  "Mexico"),
+    ("DR Congo",                 "England"),
+    ("Senegal",                  "Belgium"),
+    ("Bosnia and Herzegovina",   "USA"),
+    ("Austria",                  "Spain"),
+    ("Croatia",                  "Portugal"),
+    ("Algeria",                  "Switzerland"),
+    ("Egypt",                    "Australia"),
+    ("Cape Verde",               "Argentina"),
+    ("Ghana",                    "Colombia"),
+]
+
+SPORT5_EXACT_BONUS_GROUP    = 6   # extra pts for exact scoreline (all rounds)
 SPORT5_EXACT_BONUS_KNOCKOUT = 6   # extra pts in knockout rounds

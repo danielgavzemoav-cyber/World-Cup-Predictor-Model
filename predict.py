@@ -13,7 +13,8 @@ import matplotlib.gridspec as gridspec
 from pathlib import Path
 
 from data import (HOST_NATIONS, ROUND1_FIXTURES, ALL_GROUP_FIXTURES,
-                  SPORT5_ODDS, SPORT5_EXACT_BONUS_GROUP)
+                  SPORT5_ODDS, SPORT5_EXACT_BONUS_GROUP, SPORT5_EXACT_BONUS_KNOCKOUT,
+                  KNOCKOUT_R32_FIXTURES)
 from models import ELOSystem, EnsembleModel
 
 
@@ -231,7 +232,7 @@ def print_group_stage_summary(results: list[dict]) -> None:
 
     print("\n  (H) = host-nation home advantage")
     print("  Rec = EV-optimised sport5 score (or most probable if * = no odds entered)")
-    print("  EV  = expected sport5 points for Rec prediction  (base_pts + 4 for exact)")
+    print("  EV  = expected sport5 points for Rec prediction  (base_pts + 6 for exact)")
 
 
 # backward-compat alias
@@ -243,13 +244,15 @@ def print_round1_summary(results):
 # 5.  SPORT5 STRATEGY ADVICE
 # ══════════════════════════════════════════════════════════════════════════════
 
-def print_sport5_strategy(results: list[dict]) -> None:
+def print_sport5_strategy(results: list[dict],
+                          exact_bonus: float = SPORT5_EXACT_BONUS_GROUP,
+                          title: str = "SPORT5 STRATEGY – GAMES WORTH TAKING A RISK ON") -> None:
     """
     Highlights the games where going for the underdog prediction
     has a higher EV than the favourite.
     """
     print("\n" + "=" * 60)
-    print("  SPORT5 STRATEGY – GAMES WORTH TAKING A RISK ON")
+    print(f"  {title}")
     print("=" * 60)
 
     for r in results:
@@ -260,16 +263,12 @@ def print_sport5_strategy(results: list[dict]) -> None:
         probs = {"H": r["ens_H"], "D": r["ens_D"], "A": r["ens_A"]}
         n     = mat.shape[0]
 
-        # Full EV per outcome = best scoreline for that outcome
-        # EV(score s in outcome X) = odds[X]*P(X) + 4*P(s)
-        # The odds[X]*P(X) term is constant within outcome X, so best score = most likely score in X.
-        # Full EV for outcome X = odds[X]*P(X) + 4 * max_{s in X} P(s)
         def best_ev_for_outcome(out):
             max_p_exact = max(
                 (mat[g1, g2] for g1 in range(n) for g2 in range(n) if _outcome(g1, g2) == out),
                 default=0.0
             )
-            return odds[out] * probs[out] + 4 * max_p_exact
+            return odds[out] * probs[out] + exact_bonus * max_p_exact
 
         evs = {out: best_ev_for_outcome(out) for out in ("H", "D", "A")}
 
@@ -280,7 +279,8 @@ def print_sport5_strategy(results: list[dict]) -> None:
             t1, t2 = r["team1"], r["team2"]
             label  = {"H": f"{t1} wins", "D": "Draw", "A": f"{t2} wins"}
             rec    = r["rec_score"]
-            print(f"\n  {t1} vs {t2}  (Group {r['group']})")
+            context = f"Group {r['group']}" if "group" in r else "Knockout"
+            print(f"\n  {t1} vs {t2}  ({context})")
             print(f"    Most probable : {label[fav_key]}  "
                   f"({probs[fav_key]:.0%} prob,  full EV={evs[fav_key]:.2f})")
             print(f"    Best EV pick  : {label[best_out]}  "
@@ -289,7 +289,65 @@ def print_sport5_strategy(results: list[dict]) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6.  PIE-CHART VISUALISATION
+# 6.  KNOCKOUT STAGE PREDICTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def predict_knockout_stage(ensemble: EnsembleModel,
+                           elo: ELOSystem,
+                           matches: pd.DataFrame,
+                           as_of: pd.Timestamp | None = None,
+                           ) -> list[dict]:
+    """Predict all R32 knockout-stage games using knockout exact-score bonus."""
+    if as_of is None:
+        as_of = pd.Timestamp("2026-06-28")
+    results = []
+    for t1, t2 in KNOCKOUT_R32_FIXTURES:
+        home = is_home_game(t1, t2)
+        pred = ensemble.predict_all(t1, t2, home, elo, matches, as_of)
+        odds = _get_odds(t1, t2)
+        best_score, ev, method = optimal_prediction(
+            pred["ens_matrix"], pred["ens_probs"], odds,
+            exact_bonus=SPORT5_EXACT_BONUS_KNOCKOUT,
+        )
+        results.append({
+            "team1": t1, "team2": t2, "is_home": home,
+            "ml_H": pred["ml_probs"]["H"], "ml_D": pred["ml_probs"]["D"], "ml_A": pred["ml_probs"]["A"],
+            "dc_H": pred["dc_probs"]["H"], "dc_D": pred["dc_probs"]["D"], "dc_A": pred["dc_probs"]["A"],
+            "ens_H": pred["ens_probs"]["H"], "ens_D": pred["ens_probs"]["D"], "ens_A": pred["ens_probs"]["A"],
+            "xg1": pred["xg1"], "xg2": pred["xg2"],
+            "rec_score": best_score, "rec_ev": round(ev, 3) if ev is not None else None,
+            "rec_method": method, "sport5_odds": odds,
+            "_matrix": pred["ens_matrix"],
+        })
+    return results
+
+
+def print_knockout_summary(results: list[dict]) -> None:
+    hdr = (f"  {'Team 1':<28}  {'Team 2':<28}  "
+           f"{'ENS: W/D/L':>15}  {'xG':>7}  {'Rec.':>6}  {'EV':>6}  {'Odds H/D/A'}")
+    LINE = "=" * len(hdr)
+    print("\n" + LINE)
+    print("  ROUND OF 32  –  PREDICTED OUTCOMES  (W=team1 win, D=draw, L=team2 win)")
+    print(LINE)
+    print(hdr)
+    print("-" * len(hdr))
+    for r in results:
+        ens = f"{r['ens_H']:.0%}/{r['ens_D']:.0%}/{r['ens_A']:.0%}"
+        xg  = f"{r['xg1']:.1f}-{r['xg2']:.1f}"
+        rec = f"{r['rec_score'][0]}-{r['rec_score'][1]}"
+        ev  = f"{r['rec_ev']:.2f}" if r["rec_ev"] is not None else "  N/A"
+        o   = r["sport5_odds"]
+        odds_str = f"{o['H']}/{o['D']}/{o['A']}" if o else "—"
+        home_tag = " (H)" if r["is_home"] else ""
+        print(f"  {r['team1']+home_tag:<28}  {r['team2']:<28}  "
+              f"{ens:>15}  {xg:>7}  {rec:>6}  {ev:>6}  {odds_str}")
+    print(LINE)
+    print("  Rec = EV-optimised scoreline (exact-score bonus = +6)")
+    print("  EV  = expected sport5 points  (base_pts + 6 for exact)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7.  PIE-CHART VISUALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 _COLORS = {
